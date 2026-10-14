@@ -1,0 +1,47 @@
+diff --git a/lib/raop_buffer.c b/lib/raop_buffer.c
+--- a/lib/raop_buffer.c
++++ b/lib/raop_buffer.c
+@@ -33,7 +33,11 @@
+ #include "utils.h"
+ #include "byteutils.h"
+ 
+-#define RAOP_BUFFER_LENGTH 256
++#ifdef ANDROID
++#include <android/log.h>
++#endif
++
++#define RAOP_BUFFER_LENGTH 256
+ 
+ typedef struct {
+     /* Data available */
+@@ -240,14 +244,22 @@
+     raop_buffer_entry_t *entry = &raop_buffer->entries[raop_buffer->first_seqnum % RAOP_BUFFER_LENGTH];
+     if (no_resend) {
+         /* If we do no resends, always return the first entry */
+-    } else if (!entry->filled) {
+-        /* Check how much we have space left in the buffer */
+-        if (entry_count < RAOP_BUFFER_LENGTH) {
+-            /* Return nothing and hope resend gets on time */
+-            return NULL;
+-        }
+-        /* Risk of buffer overrun, return empty buffer */
+-    }
++    } else if (!entry->filled) {
++        /*
++         * METZ experiment: mirroring AAC-ELD uses ~10.9ms/packet. Waiting until
++         * the 256-packet capacity for a missing sequence blocks audio for
++         * ~2.8 seconds. Allow a 12-packet (~130ms) reorder/resend window.
++         */
++        if (entry_count < 12) {
++            return NULL;
++        }
++#ifdef ANDROID
++        __android_log_print(ANDROID_LOG_INFO, "AirPlayNative",
++                            "METZ_RAOP_DIAG skip_missing seq=%u pending=%d",
++                            (unsigned int)raop_buffer->first_seqnum, (int)entry_count);
++#endif
++        /* Advance one missing sequence and retry when the next packet arrives. */
++    }
+ 
+     /* Update buffer and validate entry */
+     raop_buffer->first_seqnum += 1;
