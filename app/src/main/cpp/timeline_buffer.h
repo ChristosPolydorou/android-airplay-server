@@ -278,7 +278,25 @@ public:
         // most once per TRIM_THROTTLE, and not within that window of an underrun
         // (trimming while rebuilding cushion is counterproductive)
         const size_t avail = mRing.available();
-        if (avail > capOf(tuned)) {
+        // METZ experiment: when a new stream dumps seconds of stale audio into the
+        // ring, catch up in the consumer rather than preserving the old backlog.
+        // This is deliberately a latency experiment, not lossless audio recovery.
+        const size_t fastThreshold = std::max(
+            (size_t)mSampleRate * FAST_CATCHUP_BACKLOG_MS / 1000 * mChannels,
+            tuned * 4);
+        if (avail > fastThreshold && now - mLastFastCatchupNs >= FAST_CATCHUP_MIN_INTERVAL_NS) {
+            // Keep at least 40ms to avoid starving the output immediately.
+            const size_t keepSamples = std::max(
+                tuned, (size_t)mSampleRate * 40 / 1000 * mChannels);
+            const size_t skipped = avail - keepSamples;
+            mRing.skip(skipped);
+            mFastCatchupFrames.fetch_add(static_cast<uint32_t>(skipped / mChannels),
+                                         std::memory_order_relaxed);
+            mMetrics.countTrim();
+            mLastFastCatchupNs = now;
+            mLastTrimBlockNs = now;
+            mAboveCapSinceNs = 0;
+        } else if (avail > capOf(tuned)) {
             if (mAboveCapSinceNs == 0) mAboveCapSinceNs = now;
         } else {
             mAboveCapSinceNs = 0;
@@ -338,6 +356,7 @@ public:
         uint32_t discardedSamples;
         uint32_t outputFrames;
         uint32_t primingMutedFrames;
+        uint32_t fastCatchupFrames;
     };
     Trace trace() const {
         return {
@@ -345,7 +364,8 @@ public:
             static_cast<uint32_t>(mTracker.target() / mChannels * 1000 / mSampleRate),
             mRing.discardedSamples(),
             mOutputFrames.load(std::memory_order_relaxed),
-            mPrimingMutedFrames.load(std::memory_order_relaxed)
+            mPrimingMutedFrames.load(std::memory_order_relaxed),
+            mFastCatchupFrames.load(std::memory_order_relaxed)
         };
     }
 
@@ -394,6 +414,8 @@ private:
 
     static constexpr int64_t SLACK_NS = 10'000'000LL;    // ignore <10ms gaps (NTP shift, rounding)
     static constexpr int64_t MAX_GAP_NS = 750'000'000LL; // >750ms = discontinuity, re-anchor
+    static constexpr int FAST_CATCHUP_BACKLOG_MS = 250;
+    static constexpr int64_t FAST_CATCHUP_MIN_INTERVAL_NS = 150'000'000LL;
     static constexpr int TRIM_FLOOR_MS = 30;             // min trim point even for tiny cushion
     static constexpr int TRIM_THROTTLE_MS = 2000;        // min spacing between trims, and after underrun
     static constexpr int64_t TRIM_THROTTLE_NS = (int64_t)TRIM_THROTTLE_MS * 1'000'000LL;
@@ -413,6 +435,8 @@ private:
     // Counters updated by the real-time consumer without calling logging/JNI.
     std::atomic<uint32_t> mOutputFrames{0};
     std::atomic<uint32_t> mPrimingMutedFrames{0};
+    std::atomic<uint32_t> mFastCatchupFrames{0};
+    int64_t mLastFastCatchupNs = 0;  // read() callback thread only
 
     int64_t mExpectedPtsNs = 0;          // presentation time expected at write head
 };
