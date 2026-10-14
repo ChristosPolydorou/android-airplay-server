@@ -20,6 +20,8 @@ public:
     explicit SpscRing(size_t capacitySamples)
         : mCapacity(capacitySamples), mBuf(new int16_t[capacitySamples]) {}
 
+    uint32_t discardedSamples() const { return mDiscardedSamples.load(std::memory_order_relaxed); }
+
     size_t available() const {  // samples readable
         return mWrite.load(std::memory_order_acquire) - mRead.load(std::memory_order_acquire);
     }
@@ -29,7 +31,12 @@ public:
         const size_t w = mWrite.load(std::memory_order_relaxed);
         const size_t r = mRead.load(std::memory_order_acquire);
         const size_t freeSpace = mCapacity - (w - r);
-        if (n > freeSpace) n = freeSpace;
+        if (n > freeSpace) {
+            // The existing drop counter does not include ring-capacity truncation.
+            mDiscardedSamples.fetch_add(static_cast<uint32_t>(n - freeSpace),
+                                        std::memory_order_relaxed);
+            n = freeSpace;
+        }
         const size_t wi = w % mCapacity;
         const size_t first = (n < mCapacity - wi) ? n : (mCapacity - wi);
         memcpy(&mBuf[wi], src, first * sizeof(int16_t));
@@ -66,6 +73,7 @@ private:
     std::unique_ptr<int16_t[]> mBuf;
     std::atomic<size_t> mWrite{0};
     std::atomic<size_t> mRead{0};
+    std::atomic<uint32_t> mDiscardedSamples{0};
 };
 
 /*
@@ -298,6 +306,8 @@ public:
             // also keep priming on empty ring: with 0 cushion `buffered < tuned` is
             // never true, so we'd otherwise underrun on every empty read between sounds
             if (buffered == 0 || (buffered < tuned && !starved)) {
+                mPrimingMutedFrames.fetch_add(static_cast<uint32_t>(frames),
+                                            std::memory_order_relaxed);
                 memset(out, 0, need * sizeof(int16_t));
                 return;
             }
@@ -306,6 +316,8 @@ public:
         }
 
         const size_t got = mRing.read(out, need);
+        mOutputFrames.fetch_add(static_cast<uint32_t>(got / mChannels),
+                                std::memory_order_relaxed);
         if (got < need) {
             memset(out + got, 0, (need - got) * sizeof(int16_t));
             mPriming = true;
@@ -318,6 +330,24 @@ public:
     // call after discontinuity or clock shift/resync; producer-side, must not run
     // concurrently with write()
     void reanchorTracker() { mTracker.reanchor(); }
+
+    // Independent diagnostic snapshot. Do NOT change the packed UI Debug struct.
+    struct Trace {
+        uint32_t backlogMs;
+        uint32_t cushionMs;
+        uint32_t discardedSamples;
+        uint32_t outputFrames;
+        uint32_t primingMutedFrames;
+    };
+    Trace trace() const {
+        return {
+            static_cast<uint32_t>(mRing.available() / mChannels * 1000 / mSampleRate),
+            static_cast<uint32_t>(mTracker.target() / mChannels * 1000 / mSampleRate),
+            mRing.discardedSamples(),
+            mOutputFrames.load(std::memory_order_relaxed),
+            mPrimingMutedFrames.load(std::memory_order_relaxed)
+        };
+    }
 
     // rebuild prebuffer cushion before resuming, e.g. after output stream restart;
     // must not run concurrently with read()
@@ -380,6 +410,9 @@ private:
     int64_t mLastTrimBlockNs = 0;        // consumer-only: last trim/underrun time (trim throttle)
     int64_t mAboveCapSinceNs = 0;        // consumer-only: when backlog first exceeded cap (0 = under)
     std::atomic<bool> mUnderran{false};  // consumer->producer: underrun happened
+    // Counters updated by the real-time consumer without calling logging/JNI.
+    std::atomic<uint32_t> mOutputFrames{0};
+    std::atomic<uint32_t> mPrimingMutedFrames{0};
 
     int64_t mExpectedPtsNs = 0;          // presentation time expected at write head
 };

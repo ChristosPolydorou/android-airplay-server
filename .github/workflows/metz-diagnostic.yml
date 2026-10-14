@@ -1,0 +1,32 @@
+name: METZ ARMv7 diagnostic APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK toolchain
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.0.12077973' 'cmake;3.22.1'
+      - name: Build diagnostic APK (no signing secrets required)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metz-airplay-audio-diagnostic-armeabi-v7a
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

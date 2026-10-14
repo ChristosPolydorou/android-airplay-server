@@ -148,6 +148,27 @@ struct AudioEngine {
         }
         if (mDecoder.decoder && !mDecoder.decoder->decode(data, len, ptsNs))
             mDecodeErrors.fetch_add(1, std::memory_order_relaxed);
+
+        // Diagnostic logs are emitted on the packet/decode thread, NEVER in the
+        // real-time audio callback. Numbers only; no media/payload content.
+        const int64_t nowNs = monoNs();
+        const int64_t gapMs = mLastAudioPacketNs > 0
+            ? (nowNs - mLastAudioPacketNs) / 1000000LL : -1;
+        if (mLastAudioPacketNs == 0 || gapMs >= 300) {
+            mLog->info("METZ_AUDIO_DIAG first_or_gap=%lldms ct=%d spf=%d",
+                       (long long)gapMs, ct, wantConfig.spf);
+        }
+        mLastAudioPacketNs = nowNs;
+        if (mLastDiagNs == 0 || nowNs - mLastDiagNs >= 250000000LL) {
+            const auto t = mTimeline->trace();
+            mLog->info(
+                "METZ_AUDIO_DIAG backlog=%ums target=%ums ringDiscard=%u "
+                "outputFrames=%u primingMutedFrames=%u decodeErrors=%d",
+                t.backlogMs, t.cushionMs, t.discardedSamples,
+                t.outputFrames, t.primingMutedFrames,
+                mDecodeErrors.load(std::memory_order_relaxed));
+            mLastDiagNs = nowNs;
+        }
     }
 
 private:
@@ -205,6 +226,9 @@ private:
 
     AudioDebugData mDebug{};
     std::atomic<int32_t> mDecodeErrors{0};
+    // Only accessed on the RAOP decode thread.
+    int64_t mLastAudioPacketNs = 0;
+    int64_t mLastDiagNs = 0;
 };
 
 AudioEngine *audio_engine_create(std::shared_ptr<LogSink> log, int sampleRate, int channels) {

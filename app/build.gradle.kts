@@ -53,7 +53,10 @@ android {
 
     buildTypes {
         debug {
-            ndk { abiFilters += allAbis }
+            // A separate app avoids replacing the trusted working installation.
+            applicationIdSuffix = ".diag"
+            versionNameSuffix = "-metz-diagnostic"
+            ndk { abiFilters += "armeabi-v7a" }
         }
         release {
             isMinifyEnabled = true
