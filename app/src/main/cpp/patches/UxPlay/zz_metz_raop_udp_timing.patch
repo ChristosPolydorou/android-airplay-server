@@ -1,0 +1,85 @@
+diff --git a/lib/raop_rtp.c b/lib/raop_rtp.c
+--- a/lib/raop_rtp.c
++++ b/lib/raop_rtp.c
+@@ -20,7 +20,10 @@
+ #include <string.h>
+ #include <assert.h>
+ #include <errno.h>
+-#include <stdbool.h>
++#include <stdbool.h>
++#ifdef ANDROID
++#include <android/log.h>
++#endif
+ 
+ #include "raop_rtp.h"
+ #include "raop.h"
+@@ -385,7 +388,9 @@
+     struct sockaddr_storage saddr;
+     socklen_t saddrlen = 0;
+     bool got_remote_control_saddr = false;
+-    uint64_t video_arrival_offset = 0;
++    uint64_t video_arrival_offset = 0;
++    uint64_t metzPrevUdpNs = 0, metzPrevPayloadNs = 0;
++    unsigned int metzNoDataPackets = 0;
+ 
+     /* initial audio stream has no data */    
+     unsigned char no_data_marker[] = {0x00, 0x68, 0x34, 0x00 };
+@@ -562,7 +567,18 @@
+             //logger_log(raop_rtp->logger, LOGGER_INFO, "Would have data packet in queue");
+             // Receiving audio data here
+             saddrlen = sizeof(saddr);
+-            packetlen = recvfrom(raop_rtp->dsock, (char *)packet, sizeof(packet), 0, NULL, NULL);
++            packetlen = recvfrom(raop_rtp->dsock, (char *)packet, sizeof(packet), 0, NULL, NULL);
++            const uint64_t metzNowNs = raop_ntp_get_local_time();
++#ifdef ANDROID
++            if (packetlen >= 12 && (metzPrevUdpNs == 0 ||
++                    (metzNowNs > metzPrevUdpNs && metzNowNs - metzPrevUdpNs >= 300000000ULL))) {
++                __android_log_print(ANDROID_LOG_INFO, "AirPlayNative",
++                    "METZ_RAOP_DIAG udp_gap_ms=%llu bytes=%u",
++                    (unsigned long long)(metzPrevUdpNs ? (metzNowNs - metzPrevUdpNs) / 1000000ULL : 0),
++                    packetlen);
++            }
++#endif
++            if (packetlen >= 12) metzPrevUdpNs = metzNowNs;
+             // rtp payload type
+             //int type_d = packet[1] & ~0x80;
+             //logger_log(raop_rtp->logger, LOGGER_DEBUG, "raop_rtp_thread_udp type_d 0x%02x, packetlen = %d", type_d, packetlen);
+@@ -587,11 +603,12 @@
+                  raop_rtp->initial_sync = true;
+             }	    
+ 
+-            if (packetlen == 12 ||(packetlen == 16 && memcmp(packet + 12, no_data_marker, 4) == 0)) {
+-                /* this is a "no data" packet */
+-	        /* the first such packet could be used to provide the initial rtptime and seqnum formerly given in the RECORD request */
+-                continue;
+-            }
++            if (packetlen == 12 ||(packetlen == 16 && memcmp(packet + 12, no_data_marker, 4) == 0)) {
++                /* this is a "no data" packet */
++	        /* the first such packet could be used to provide the initial rtptime and seqnum formerly given in the RECORD request */
++                metzNoDataPackets++;
++                continue;
++            }
+ 	    
+             if (raop_rtp->ct == 2 && packetlen == 44)  continue;   /* ignore the ALAC packets with format information only. */
+ 
+@@ -595,7 +612,19 @@
+ 	    
+             if (raop_rtp->ct == 2 && packetlen == 44)  continue;   /* ignore the ALAC packets with format information only. */
+ 
+-            raop_buffer_enqueue(raop_rtp->buffer, packet, packetlen, 1);
++#ifdef ANDROID
++            if (metzPrevPayloadNs == 0 || (metzNowNs > metzPrevPayloadNs &&
++                    metzNowNs - metzPrevPayloadNs >= 300000000ULL)) {
++                __android_log_print(ANDROID_LOG_INFO, "AirPlayNative",
++                    "METZ_RAOP_DIAG payload_gap_ms=%llu nodata=%u seq=%u",
++                    (unsigned long long)(metzPrevPayloadNs ?
++                        (metzNowNs - metzPrevPayloadNs) / 1000000ULL : 0),
++                    metzNoDataPackets, (unsigned int)byteutils_get_short_be(packet, 2));
++            }
++#endif
++            metzPrevPayloadNs = metzNowNs;
++            metzNoDataPackets = 0;
++            raop_buffer_enqueue(raop_rtp->buffer, packet, packetlen, 1);
+ 
+             if (!raop_rtp->initial_sync) {
+                 /* wait until the first sync before dequeing ALAC */
