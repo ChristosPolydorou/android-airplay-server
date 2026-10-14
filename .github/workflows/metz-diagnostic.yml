@@ -16,11 +16,20 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: gradle
-      - uses: android-actions/setup-android@v3
       - name: Install Android SDK toolchain
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.0.12077973' 'cmake;3.22.1'
+          set -euo pipefail
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            SDKMANAGER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "::error::sdkmanager is not installed on the runner"
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.0.12077973' 'cmake;3.22.1'
       - name: Build diagnostic APK (no signing secrets required)
         run: |
           chmod +x ./gradlew
