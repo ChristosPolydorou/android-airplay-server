@@ -163,9 +163,9 @@ struct AudioEngine {
             const auto t = mTimeline->trace();
             mLog->info(
                 "METZ_AUDIO_DIAG backlog=%ums target=%ums ringDiscard=%u "
-                "outputFrames=%u primingMutedFrames=%u decodeErrors=%d",
+                "outputFrames=%u primingMutedFrames=%u fastCatchupFrames=%u decodeErrors=%d",
                 t.backlogMs, t.cushionMs, t.discardedSamples,
-                t.outputFrames, t.primingMutedFrames,
+                t.outputFrames, t.primingMutedFrames, t.fastCatchupFrames,
                 mDecodeErrors.load(std::memory_order_relaxed));
             mLastDiagNs = nowNs;
         }
