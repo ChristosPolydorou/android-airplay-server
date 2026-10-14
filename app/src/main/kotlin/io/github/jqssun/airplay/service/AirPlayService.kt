@@ -598,7 +598,19 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
 
     // RaopCallbackHandler (called from native threads)
 
+    // METZ diagnostic: periodic video-frame timestamps, so logcat can be aligned
+    // with native METZ_AUDIO_DIAG audio first_or_gap events. No video payload logged.
+    // AtomicLong avoids races if callbacks arrive from different native threads.
+    private val metzLastVideoLogNs = java.util.concurrent.atomic.AtomicLong(0L)
+
     override fun onVideoData(data: ByteArray, ntpTimeNs: Long, isH265: Boolean) {
+        val nowNs = android.os.SystemClock.elapsedRealtimeNanos()
+        val prevNs = metzLastVideoLogNs.get()
+        if (nowNs - prevNs >= 250_000_000L &&
+            metzLastVideoLogNs.compareAndSet(prevNs, nowNs)) {
+            android.util.Log.i("AirPlayNative",
+                "METZ_AV_DIAG video_frame monoNs=$nowNs senderNtpNs=$ntpTimeNs h265=$isH265")
+        }
         videoRenderer.feedFrame(data, ntpTimeNs, isH265)
     }
 
